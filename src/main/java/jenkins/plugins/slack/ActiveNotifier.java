@@ -4,12 +4,13 @@ import hudson.EnvVars;
 import hudson.Util;
 import hudson.model.AbstractBuild;
 import hudson.model.AbstractProject;
-import hudson.model.BuildListener;
 import hudson.model.Cause;
 import hudson.model.CauseAction;
 import hudson.model.Hudson;
+import hudson.model.Job;
 import hudson.model.Result;
 import hudson.model.Run;
+import hudson.model.TaskListener;
 import hudson.scm.ChangeLogSet;
 import hudson.scm.ChangeLogSet.AffectedFile;
 import hudson.scm.ChangeLogSet.Entry;
@@ -21,6 +22,7 @@ import hudson.util.LogTaskListener;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.StringUtils;
 import org.jenkinsci.plugins.displayurlapi.DisplayURLProvider;
+import org.jenkinsci.plugins.workflow.job.WorkflowRun;
 
 import java.io.IOException;
 import java.text.MessageFormat;
@@ -36,30 +38,27 @@ import java.util.regex.Pattern;
 import static java.util.logging.Level.INFO;
 import static java.util.logging.Level.SEVERE;
 
-@SuppressWarnings("rawtypes")
 public class ActiveNotifier implements FineGrainedNotifier {
 
     private static final Logger logger = Logger.getLogger(SlackListener.class.getName());
 
     SlackNotifier notifier;
-    BuildListener listener;
+    TaskListener listener;
 
-    public ActiveNotifier(SlackNotifier notifier, BuildListener listener) {
+    public ActiveNotifier(SlackNotifier notifier, TaskListener listener) {
         super();
         this.notifier = notifier;
         this.listener = listener;
     }
 
-    private SlackService getSlack(AbstractBuild r) {
+    private SlackService getSlack(Run<?, ?> r) {
         return notifier.newSlackService(r, listener);
     }
 
-    public void deleted(AbstractBuild r) {
+    public void deleted(Run<?, ?> r) {
     }
 
-    public void started(AbstractBuild build) {
-
-        AbstractProject<?, ?> project = build.getProject();
+    public void started(Run<?, ?> build) {
 
         CauseAction causeAction = build.getAction(CauseAction.class);
 
@@ -86,9 +85,9 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
     }
 
-    private void notifyStart(AbstractBuild build, String message) {
-        AbstractProject<?, ?> project = build.getProject();
-        AbstractBuild<?, ?> previousBuild = project.getLastBuild().getPreviousCompletedBuild();
+    private void notifyStart(Run<?, ?> build, String message) {
+        Job<?, ?> parent = build.getParent();
+        Run<?, ?> previousBuild = parent.getLastBuild().getPreviousCompletedBuild();
         if (previousBuild == null) {
             getSlack(build).publish(message, "good");
         } else {
@@ -96,10 +95,10 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
     }
 
-    public void finalized(AbstractBuild r) {
-        AbstractProject<?, ?> project = r.getProject();
+    public void finalized(Run<?, ?> r) {
+        Job<?, ?> parent = r.getParent();
         Result result = r.getResult();
-        AbstractBuild<?, ?> previousBuild = project.getLastBuild();
+        Run<?, ?> previousBuild = parent.getLastBuild();
         do {
             previousBuild = previousBuild.getPreviousCompletedBuild();
         } while (previousBuild != null && previousBuild.getResult() == Result.ABORTED);
@@ -113,10 +112,10 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
     }
 
-    public void completed(AbstractBuild r) {
-        AbstractProject<?, ?> project = r.getProject();
+    public void completed(Run<?, ?> r) {
+        Job<?, ?> parent = r.getParent();
         Result result = r.getResult();
-        AbstractBuild<?, ?> previousBuild = project.getLastBuild();
+        Run<?, ?> previousBuild = parent.getLastBuild();
         do {
             previousBuild = previousBuild.getPreviousCompletedBuild();
         } while (previousBuild != null && previousBuild.getResult() == Result.ABORTED);
@@ -142,7 +141,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
     }
 
-    private boolean moreTestFailuresThanPreviousBuild(AbstractBuild currentBuild, AbstractBuild<?, ?> previousBuild) {
+    private boolean moreTestFailuresThanPreviousBuild(Run<?, ?> currentBuild, Run<?, ?> previousBuild) {
         if (getTestResult(currentBuild) != null && getTestResult(previousBuild) != null) {
             if (getTestResult(currentBuild).getFailCount() > getTestResult(previousBuild).getFailCount())
                 return true;
@@ -153,11 +152,11 @@ public class ActiveNotifier implements FineGrainedNotifier {
         return false;
     }
 
-    private TestResultAction getTestResult(AbstractBuild build) {
+    private TestResultAction getTestResult(Run<?, ?> build) {
         return build.getAction(TestResultAction.class);
     }
 
-    private Set<String> getFailedTestIds(AbstractBuild currentBuild) {
+    private Set<String> getFailedTestIds(Run<?, ?> currentBuild) {
         Set<String> failedTestIds = new HashSet<String>();
         List<? extends TestResult> failedTests = getTestResult(currentBuild).getFailedTests();
         for(TestResult result : failedTests) {
@@ -167,20 +166,35 @@ public class ActiveNotifier implements FineGrainedNotifier {
         return failedTestIds;
     }
 
-    String getChanges(AbstractBuild r, boolean includeCustomMessage) {
-        if (!r.hasChangeSetComputed()) {
-            logger.info("No change set computed...");
-            return null;
-        }
-        ChangeLogSet changeSet = r.getChangeSet();
+    String getChanges(Run<?, ?> r, boolean includeCustomMessage) {
         List<Entry> entries = new LinkedList<Entry>();
         Set<AffectedFile> files = new HashSet<AffectedFile>();
-        for (Object o : changeSet.getItems()) {
-            Entry entry = (Entry) o;
-            logger.info("Entry " + o);
-            entries.add(entry);
-            if (CollectionUtils.isNotEmpty(entry.getAffectedFiles())) {
-                files.addAll(entry.getAffectedFiles());
+        if (r instanceof AbstractBuild) {
+            AbstractBuild<?, ?> build = (AbstractBuild<?, ?>)r;
+            if (!build.hasChangeSetComputed()) {
+                logger.info("No change set computed...");
+                return null;
+            }
+            ChangeLogSet changeSet = build.getChangeSet();
+            for (Object o : changeSet.getItems()) {
+                Entry entry = (Entry) o;
+                logger.info("Entry " + o);
+                entries.add(entry);
+                if (CollectionUtils.isNotEmpty(entry.getAffectedFiles())) {
+                    files.addAll(entry.getAffectedFiles());
+                }
+            }
+        } else if (r instanceof WorkflowRun) {
+            WorkflowRun build = (WorkflowRun)r;
+            for (ChangeLogSet changeSet: build.getChangeSets()) {
+                for (Object o : changeSet.getItems()) {
+                    Entry entry = (Entry) o;
+                    logger.info("Entry " + o);
+                    entries.add(entry);
+                    if (CollectionUtils.isNotEmpty(entry.getAffectedFiles())) {
+                        files.addAll(entry.getAffectedFiles());
+                    }
+                }
             }
         }
         if (entries.isEmpty()) {
@@ -204,30 +218,47 @@ public class ActiveNotifier implements FineGrainedNotifier {
         return message.toString();
     }
 
-    String getCommitList(AbstractBuild r) {
-        ChangeLogSet changeSet = r.getChangeSet();
+    String getCommitList(Run<?, ?> r) {
+        Set<String> commits = new HashSet<String>();
         List<Entry> entries = new LinkedList<Entry>();
-        for (Object o : changeSet.getItems()) {
-            Entry entry = (Entry) o;
-            logger.info("Entry " + o);
-            entries.add(entry);
-        }
-        if (entries.isEmpty()) {
-            logger.info("Empty change...");
-            Cause.UpstreamCause c = (Cause.UpstreamCause)r.getCause(Cause.UpstreamCause.class);
-            if (c == null) {
+        if (r instanceof AbstractBuild) {
+            AbstractBuild<?, ?> build = (AbstractBuild<?, ?>)r;
+            ChangeLogSet changeSet = build.getChangeSet();
+            for (Object o : changeSet.getItems()) {
+                Entry entry = (Entry) o;
+                logger.info("Entry " + o);
+                entries.add(entry);
+            }
+            if (entries.isEmpty()) {
+                logger.info("Empty change...");
+                Cause.UpstreamCause c = (Cause.UpstreamCause)build.getCause(Cause.UpstreamCause.class);
+                if (c == null) {
+                    return "No Changes.";
+                }
+                String upProjectName = c.getUpstreamProject();
+                int buildNumber = c.getUpstreamBuild();
+                AbstractProject<?, ?> project = Hudson.getInstance().getItemByFullName(upProjectName, AbstractProject.class);
+                AbstractBuild<?, ?> upBuild = (AbstractBuild<?, ?>)project.getBuildByNumber(buildNumber);
+                return getCommitList(upBuild);
+            }
+        } else if (r instanceof WorkflowRun) {
+            WorkflowRun build = (WorkflowRun)r;
+            for (ChangeLogSet changeSet: build.getChangeSets()) {
+                Set<AffectedFile> files = new HashSet<AffectedFile>();
+                for (Object o : changeSet.getItems()) {
+                    Entry entry = (Entry) o;
+                    logger.info("Entry " + o);
+                    entries.add(entry);
+                }
+            }
+            if (entries.isEmpty()) {
+                logger.info("Empty change...");
                 return "No Changes.";
             }
-            String upProjectName = c.getUpstreamProject();
-            int buildNumber = c.getUpstreamBuild();
-            AbstractProject project = Hudson.getInstance().getItemByFullName(upProjectName, AbstractProject.class);
-            AbstractBuild upBuild = (AbstractBuild)project.getBuildByNumber(buildNumber);
-            return getCommitList(upBuild);
         }
-        Set<String> commits = new HashSet<String>();
+        CommitInfoChoice commitInfoChoice = notifier.getCommitInfoChoice();
         for (Entry entry : entries) {
             StringBuffer commit = new StringBuffer();
-            CommitInfoChoice commitInfoChoice = notifier.getCommitInfoChoice();
             if (commitInfoChoice.showTitle()) {
                 commit.append(entry.getMsg());
             }
@@ -242,7 +273,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         return message.toString();
     }
 
-    static String getBuildColor(AbstractBuild r) {
+    static String getBuildColor(Run<?, ?> r) {
         Result result = r.getResult();
         if (result == Result.SUCCESS) {
             return "good";
@@ -253,7 +284,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
     }
 
-    String getBuildStatusMessage(AbstractBuild r, boolean includeTestSummary, boolean includeFailedTests, boolean includeCustomMessage) {
+    String getBuildStatusMessage(Run<?, ?> r, boolean includeTestSummary, boolean includeFailedTests, boolean includeCustomMessage) {
         MessageBuilder message = new MessageBuilder(notifier, r);
         message.appendStatusMessage();
         message.appendDuration();
@@ -284,12 +315,12 @@ public class ActiveNotifier implements FineGrainedNotifier {
                                     UNSTABLE_STATUS_MESSAGE = "Unstable",
                                     REGRESSION_STATUS_MESSAGE = "Regression",
                                     UNKNOWN_STATUS_MESSAGE = "Unknown";
-        
+
         private StringBuffer message;
         private SlackNotifier notifier;
-        private AbstractBuild build;
+        private Run<?, ?> build;
 
-        public MessageBuilder(SlackNotifier notifier, AbstractBuild build) {
+        public MessageBuilder(SlackNotifier notifier, Run<?, ?> build) {
             this.notifier = notifier;
             this.message = new StringBuffer();
             this.build = build;
@@ -301,29 +332,32 @@ public class ActiveNotifier implements FineGrainedNotifier {
             return this;
         }
 
-        private String getStatusMessage(AbstractBuild r) {
-            if (r.isBuilding()) {
+        private String getStatusMessage(Run<?, ?> r) {
+            if (r instanceof AbstractBuild && ((AbstractBuild<?, ?>)r).isBuilding()) {
                 return STARTING_STATUS_MESSAGE;
             }
+            // Pipeline runs will always be building when this is called; assume user has
+            // wrapped entire build in the slackReport block, so consider that if this is
+            // called that the build is essentially done.
             Result result = r.getResult();
             Result previousResult;
-            Run previousBuild = r.getProject().getLastBuild().getPreviousBuild();
+            Run previousBuild = r.getParent().getLastBuild().getPreviousBuild();
             Run previousSuccessfulBuild = r.getPreviousSuccessfulBuild();
             boolean buildHasSucceededBefore = previousSuccessfulBuild != null;
-            
+
             /*
              * If the last build was aborted, go back to find the last non-aborted build.
              * This is so that aborted builds do not affect build transitions.
              * I.e. if build 1 was failure, build 2 was aborted and build 3 was a success the transition
-             * should be failure -> success (and therefore back to normal) not aborted -> success. 
+             * should be failure -> success (and therefore back to normal) not aborted -> success.
              */
             Run lastNonAbortedBuild = previousBuild;
             while(lastNonAbortedBuild != null && lastNonAbortedBuild.getResult() == Result.ABORTED) {
                 lastNonAbortedBuild = lastNonAbortedBuild.getPreviousBuild();
             }
-            
-            
-            /* If all previous builds have been aborted, then use 
+
+
+            /* If all previous builds have been aborted, then use
              * SUCCESS as a default status so an aborted message is sent
              */
             if(lastNonAbortedBuild == null) {
@@ -331,13 +365,13 @@ public class ActiveNotifier implements FineGrainedNotifier {
             } else {
                 previousResult = lastNonAbortedBuild.getResult();
             }
-            
+
             /* Back to normal should only be shown if the build has actually succeeded at some point.
-             * Also, if a build was previously unstable and has now succeeded the status should be 
+             * Also, if a build was previously unstable and has now succeeded the status should be
              * "Back to normal"
              */
             if (result == Result.SUCCESS
-                    && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE) 
+                    && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE)
                     && buildHasSucceededBefore && notifier.getNotifyBackToNormal()) {
                 return BACK_TO_NORMAL_STATUS_MESSAGE;
             }
@@ -376,7 +410,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
 
         private MessageBuilder startMessage() {
-            message.append(this.escape(build.getProject().getFullDisplayName()));
+            message.append(this.escape(build.getParent().getFullDisplayName()));
             message.append(" - ");
             message.append(this.escape(build.getDisplayName()));
             message.append(" ");
@@ -446,7 +480,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
             message.append(envVars.expand(customMessage));
             return this;
         }
-        
+
         private String createBackToNormalDurationString(){
             // This status code guarantees that the previous build fails and has been successful before
             // The back to normal time is the time since the build first broke

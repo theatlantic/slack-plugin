@@ -1,18 +1,17 @@
 package jenkins.plugins.slack;
 
-import hudson.model.AbstractBuild;
+import hudson.model.Run;
 
-@SuppressWarnings("rawtypes")
 public class DisabledNotifier implements FineGrainedNotifier {
-    public void started(AbstractBuild r) {
+    public void started(Run<?, ?> r) {
     }
 
-    public void deleted(AbstractBuild r) {
+    public void deleted(Run<?, ?> r) {
     }
 
-    public void finalized(AbstractBuild r) {
+    public void finalized(Run<?, ?> r) {
     }
 
-    public void completed(AbstractBuild r) {
+    public void completed(Run<?, ?> r) {
     }
 }

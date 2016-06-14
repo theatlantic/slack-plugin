@@ -1,19 +1,15 @@
 package jenkins.plugins.slack;
 
-import hudson.model.AbstractBuild;
+import hudson.model.Run;
 
 public interface FineGrainedNotifier {
 
-    @SuppressWarnings("rawtypes")
-    void started(AbstractBuild r);
+    void started(Run<?, ?> r);
 
-    @SuppressWarnings("rawtypes")
-    void deleted(AbstractBuild r);
+    void deleted(Run<?, ?> r);
 
-    @SuppressWarnings("rawtypes")
-    void finalized(AbstractBuild r);
+    void finalized(Run<?, ?> r);
 
-    @SuppressWarnings("rawtypes")
-    void completed(AbstractBuild r);
+    void completed(Run<?, ?> r);
 
 }

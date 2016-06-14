@@ -11,11 +11,13 @@ import hudson.model.BuildListener;
 import hudson.model.Item;
 import hudson.model.Descriptor;
 import hudson.model.listeners.ItemListener;
+import hudson.model.Run;
 import hudson.security.ACL;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Notifier;
 import hudson.tasks.Publisher;
+import hudson.model.TaskListener;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 import jenkins.model.Jenkins;
@@ -288,7 +290,7 @@ public class SlackNotifier extends Notifier {
         return BuildStepMonitor.NONE;
     }
 
-    public SlackService newSlackService(AbstractBuild r, BuildListener listener) {
+    public SlackService newSlackService(Run<?, ?> r, TaskListener listener) {
         String teamDomain = this.teamDomain;
         if (StringUtils.isEmpty(teamDomain)) {
             teamDomain = getDescriptor().getTeamDomain();
