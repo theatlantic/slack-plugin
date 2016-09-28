@@ -99,9 +99,9 @@ public class ActiveNotifier implements FineGrainedNotifier {
         Job<?, ?> parent = r.getParent();
         Result result = r.getResult();
         Run<?, ?> previousBuild = parent.getLastBuild();
-        do {
+        while (previousBuild != null && previousBuild.getResult() == Result.ABORTED) {
             previousBuild = previousBuild.getPreviousCompletedBuild();
-        } while (previousBuild != null && previousBuild.getResult() == Result.ABORTED);
+        }
         Result previousResult = (previousBuild != null) ? previousBuild.getResult() : Result.SUCCESS;
         if((result.isWorseThan(previousResult) || moreTestFailuresThanPreviousBuild(r, previousBuild)) && notifier.getNotifyRegression()) {
             getSlack(r).publish(getBuildStatusMessage(r, notifier.includeTestSummary(),
@@ -116,9 +116,9 @@ public class ActiveNotifier implements FineGrainedNotifier {
         Job<?, ?> parent = r.getParent();
         Result result = r.getResult();
         Run<?, ?> previousBuild = parent.getLastBuild();
-        do {
+        while (previousBuild != null && previousBuild.getResult() == Result.ABORTED) {
             previousBuild = previousBuild.getPreviousCompletedBuild();
-        } while (previousBuild != null && previousBuild.getResult() == Result.ABORTED);
+        }
         Result previousResult = (previousBuild != null) ? previousBuild.getResult() : Result.SUCCESS;
         if ((result == Result.ABORTED && notifier.getNotifyAborted())
                 || (result == Result.FAILURE //notify only on single failed build
