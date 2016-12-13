@@ -1,5 +1,9 @@
 package jenkins.plugins.slack.workflow;
 
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Set;
+
 import hudson.AbortException;
 import hudson.Extension;
 import hudson.Util;
@@ -16,26 +20,24 @@ import jenkins.plugins.slack.SlackService;
 import jenkins.plugins.slack.StandardSlackService;
 import net.sf.json.JSONException;
 import net.sf.json.JSONObject;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepDescriptorImpl;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepExecutionImpl;
 import org.jenkinsci.plugins.workflow.steps.BodyExecution;
 import org.jenkinsci.plugins.workflow.steps.BodyExecutionCallback;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepImpl;
 import org.jenkinsci.plugins.workflow.steps.Step;
 import org.jenkinsci.plugins.workflow.steps.StepContext;
-import org.jenkinsci.plugins.workflow.steps.StepContextParameter;
+import org.jenkinsci.plugins.workflow.steps.StepDescriptor;
+import org.jenkinsci.plugins.workflow.steps.StepExecution;
+import org.jenkinsci.plugins.workflow.steps.SynchronousNonBlockingStepExecution;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.StaplerRequest;
 
 import javax.annotation.Nonnull;
-import javax.inject.Inject;
 
 /**
  * Workflow step to report the start and end of a run as a Slack channel notification.
  */
 
-public class SlackReportStep extends AbstractStepImpl {
+public class SlackReportStep extends Step {
 
     private String token;
     private boolean botUser;
@@ -263,14 +265,15 @@ public class SlackReportStep extends AbstractStepImpl {
     public SlackReportStep() {
     }
 
+    @Override
+    public StepExecution start(StepContext context) throws Exception {
+        return new SlackReportStepExecution(this, context);
+    }
+
     @Extension
-    public static class DescriptorImpl extends AbstractStepDescriptorImpl {
+    public static class DescriptorImpl extends StepDescriptor {
 
         public static final CommitInfoChoice[] COMMIT_INFO_CHOICES = CommitInfoChoice.values();
-
-        public DescriptorImpl() {
-            super(SlackReportStepExecution.class);
-        }
 
         @Override
         public String getFunctionName() {
@@ -305,28 +308,32 @@ public class SlackReportStep extends AbstractStepImpl {
             return super.newInstance(req, formData);
         }
 
+        public Set<? extends Class<?>> getRequiredContext() {
+            return Collections.singleton(TaskListener.class);
+        }
     }
 
-    public static class SlackReportStepExecution extends AbstractStepExecutionImpl {
+    public static class SlackReportStepExecution extends StepExecution {
 
         private static final long serialVersionUID = 1L;
 
-        @Inject
-        transient SlackReportStep step;
-
-        @StepContextParameter
-        transient TaskListener listener;
+        private transient final SlackReportStep step;
 
         private volatile BodyExecution body;
 
-        private FineGrainedNotifier getNotifier() {
+        SlackReportStepExecution(SlackReportStep step, StepContext context) {
+            super(context);
+            this.step = step;
+        }
+
+        private FineGrainedNotifier getNotifier() throws InterruptedException, IOException {
             //default to global config values if not set in step, but allow step to override all global settings
             Jenkins jenkins;
             //Jenkins.getInstance() may return null, no message sent in that case
             try {
                 jenkins = Jenkins.getInstance();
             } catch (NullPointerException ne) {
-                listener.error(Messages.NotificationFailedWithException(ne));
+                getContext().get(TaskListener.class).error(Messages.NotificationFailedWithException(ne));
                 return new DisabledNotifier();
             }
             SlackNotifier.DescriptorImpl slackDesc = jenkins.getDescriptorByType(SlackNotifier.DescriptorImpl.class);
@@ -345,12 +352,12 @@ public class SlackReportStep extends AbstractStepImpl {
             String channel = step.channel != null ? step.channel : slackDesc.getRoom();
 
             //placing in console log to simplify testing of retrieving values from global config or from step field; also used for tests
-            listener.getLogger().println(Messages.SlackReportStepConfig(step.baseUrl == null, step.teamDomain == null, step.token == null, step.channel == null));
+            getContext().get(TaskListener.class).getLogger().println(Messages.SlackReportStepConfig(step.baseUrl == null, step.teamDomain == null, step.token == null, step.channel == null));
 
             SlackNotifier notifier = new SlackNotifier(baseUrl, team, token, botUser, channel, authTokenCredentialId, step.sendAs, step.startNotification, step.notifyAborted,
                 step.notifyFailure, step.notifyNotBuilt, step.notifySuccess, step.notifyUnstable, step.notifyRegression, step.notifyBackToNormal, step.notifyRepeatedFailure,
                 step.includeTestSummary, step.includeFailedTests, step.commitInfoChoice, step.includeCustomMessage, step.customMessage);
-            return new ActiveNotifier(notifier, listener);
+            return new ActiveNotifier(notifier, getContext().get(TaskListener.class));
         }
 
         @Override
@@ -361,7 +368,13 @@ public class SlackReportStep extends AbstractStepImpl {
                         try {
                             getNotifier().started(context.get(Run.class));
                         } catch (Exception e) {
-                            listener.error(Messages.NotificationFailedWithException(e));
+                            try {
+                                context.get(TaskListener.class).error(Messages.NotificationFailedWithException(e));
+                            } catch (IOException ex) {
+                                // Ignore nested exception
+                            } catch (InterruptedException ex) {
+                                // Ignore nested exception
+                            }
                         }
                     }
                 }
