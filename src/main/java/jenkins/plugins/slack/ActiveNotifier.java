@@ -429,7 +429,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
             if(message.toString().contains(BACK_TO_NORMAL_STATUS_MESSAGE)){
                 durationString = createBackToNormalDurationString();
             } else {
-                durationString = build.getDurationString();
+                durationString = build.getDurationString().replace(" and counting", "");
             }
             message.append(durationString);
             return this;
@@ -459,8 +459,8 @@ public class ActiveNotifier implements FineGrainedNotifier {
                 int failed = action.getFailCount();
                 message.append("\n").append(failed).append(" Failed Tests:\n");
                 for(TestResult result : action.getFailedTests()) {
-                    message.append("\t").append(result.getName()).append(" after ")
-                            .append(result.getDurationString()).append("\n");
+                    message.append("\t").append(result.getFullName()).append(" after ")
+                            .append(result.getDurationString().replace(" and counting", "")).append("\n");
                 }
             }
             return this;
