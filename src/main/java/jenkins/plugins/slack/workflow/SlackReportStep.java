@@ -7,6 +7,7 @@ import java.util.Set;
 import hudson.AbortException;
 import hudson.Extension;
 import hudson.Util;
+import hudson.model.Result;
 import hudson.model.Run;
 import hudson.model.TaskListener;
 import jenkins.model.Jenkins;
@@ -23,6 +24,7 @@ import net.sf.json.JSONObject;
 import org.jenkinsci.plugins.workflow.steps.BodyExecution;
 import org.jenkinsci.plugins.workflow.steps.BodyExecutionCallback;
 import org.jenkinsci.plugins.workflow.steps.Step;
+import org.jenkinsci.plugins.workflow.steps.StepContextParameter;
 import org.jenkinsci.plugins.workflow.steps.StepContext;
 import org.jenkinsci.plugins.workflow.steps.StepDescriptor;
 import org.jenkinsci.plugins.workflow.steps.StepExecution;
@@ -321,78 +323,103 @@ public class SlackReportStep extends Step {
 
         private volatile BodyExecution body;
 
+        @StepContextParameter
+        private transient TaskListener listener;
+
+        @StepContextParameter
+        private transient Run build;
+
         SlackReportStepExecution(SlackReportStep step, StepContext context) {
             super(context);
             this.step = step;
         }
 
-        private FineGrainedNotifier getNotifier() throws InterruptedException, IOException {
-            //default to global config values if not set in step, but allow step to override all global settings
-            Jenkins jenkins;
-            //Jenkins.getInstance() may return null, no message sent in that case
-            try {
-                jenkins = Jenkins.getInstance();
-            } catch (NullPointerException ne) {
-                getContext().get(TaskListener.class).error(Messages.NotificationFailedWithException(ne));
-                return new DisabledNotifier();
-            }
-            SlackNotifier.DescriptorImpl slackDesc = jenkins.getDescriptorByType(SlackNotifier.DescriptorImpl.class);
-            String baseUrl = step.baseUrl != null ? step.baseUrl : slackDesc.getBaseUrl();
-            String team = step.teamDomain != null ? step.teamDomain : slackDesc.getTeamDomain();
-            String authTokenCredentialId = step.authTokenCredentialId != null ? step.authTokenCredentialId : slackDesc.getTokenCredentialId();
-            String token;
-            boolean botUser;
-            if (step.token != null) {
-                token = step.token;
-                botUser = step.botUser;
-            } else {
-                token = slackDesc.getToken();
-                botUser = slackDesc.getBotUser();
-            }
-            String channel = step.channel != null ? step.channel : slackDesc.getRoom();
-
-            //placing in console log to simplify testing of retrieving values from global config or from step field; also used for tests
-            getContext().get(TaskListener.class).getLogger().println(Messages.SlackReportStepConfig(step.baseUrl == null, step.teamDomain == null, step.token == null, step.channel == null));
-
-            SlackNotifier notifier = new SlackNotifier(baseUrl, team, token, botUser, channel, authTokenCredentialId, step.sendAs, step.startNotification, step.notifyAborted,
-                step.notifyFailure, step.notifyNotBuilt, step.notifySuccess, step.notifyUnstable, step.notifyRegression, step.notifyBackToNormal, step.notifyRepeatedFailure,
-                step.includeTestSummary, step.includeFailedTests, step.commitInfoChoice, step.includeCustomMessage, step.customMessage);
-            return new ActiveNotifier(notifier, getContext().get(TaskListener.class));
-        }
-
         @Override
         public boolean start() throws Exception {
-            body = getContext().newBodyInvoker().withCallback(new BodyExecutionCallback.TailCall() {
-                public void onStart(StepContext context) {
-                    if (step.startNotification) {
-                        try {
-                            getNotifier().started(context.get(Run.class));
-                        } catch (Exception e) {
-                            try {
-                                context.get(TaskListener.class).error(Messages.NotificationFailedWithException(e));
-                            } catch (IOException ex) {
-                                // Ignore nested exception
-                            } catch (InterruptedException ex) {
-                                // Ignore nested exception
-                            }
-                        }
-                    }
-                }
-
-                public void finished(StepContext context) throws Exception {
-                    getNotifier().completed(context.get(Run.class));
-                }
-            }).start();
-            return false;   // execution is asynchronous
+            StepContext cps = getContext();
+            this.listener = cps.get(TaskListener.class);
+            this.build = cps.get(Run.class);
+            body = cps.newBodyInvoker().withCallback(new Callback()).start();
+            return false;  // execution is asynchronous
         }
 
         @Override
         public void stop(Throwable cause) throws Exception {
-            if (body!=null)
+            if (body != null) {
                 body.cancel(cause);
+            }
         }
 
-        //streamline unit testing
+        private class Callback extends BodyExecutionCallback {
+            @Override
+            public void onStart(StepContext context) {
+                if (step.startNotification) {
+                    try {
+                        getNotifier().started(build);
+                    } catch (Exception e) {
+                        listener.error(Messages.NotificationFailedWithException(e));
+                    }
+                }
+            }
+
+            @Override
+            public void onSuccess(StepContext context, Object result) {
+                try {
+                    build.setResult(Result.SUCCESS);
+                    getNotifier().completed(build);
+                } catch (Exception e) {
+                    context.onFailure(e);
+                    return;
+                }
+                context.onSuccess(result);
+            }
+
+            @Override
+            public void onFailure(StepContext context, Throwable t) {
+                try {
+                    getNotifier().completed(build);
+                } catch (Exception e) {
+                    t.addSuppressed(e);
+                }
+                context.onFailure(t);
+            }
+
+            private FineGrainedNotifier getNotifier() throws InterruptedException, IOException {
+                // default to global config values if not set in step, but allow step to override all global settings
+                Jenkins jenkins;
+                // Jenkins.getInstance() may return null, no message sent in that case
+                try {
+                    jenkins = Jenkins.getInstance();
+                } catch (NullPointerException ne) {
+                    listener.error(Messages.NotificationFailedWithException(ne));
+                    return new DisabledNotifier();
+                }
+                SlackNotifier.DescriptorImpl slackDesc = jenkins.getDescriptorByType(SlackNotifier.DescriptorImpl.class);
+                String baseUrl = step.baseUrl != null ? step.baseUrl : slackDesc.getBaseUrl();
+                String team = step.teamDomain != null ? step.teamDomain : slackDesc.getTeamDomain();
+                String authTokenCredentialId = step.authTokenCredentialId != null ? step.authTokenCredentialId : slackDesc.getTokenCredentialId();
+                String token;
+                boolean botUser;
+                if (step.token != null) {
+                    token = step.token;
+                    botUser = step.botUser;
+                } else {
+                    token = slackDesc.getToken();
+                    botUser = slackDesc.getBotUser();
+                }
+                String channel = step.channel != null ? step.channel : slackDesc.getRoom();
+
+                // placing in console log to simplify testing of retrieving values from global config or from step field; also used for tests
+                listener.getLogger().println(Messages.SlackReportStepConfig(step.baseUrl == null, step.teamDomain == null, step.token == null, step.channel == null));
+
+                SlackNotifier notifier = new SlackNotifier(baseUrl, team, token, botUser, channel, authTokenCredentialId, step.sendAs, step.startNotification, step.notifyAborted,
+                    step.notifyFailure, step.notifyNotBuilt, step.notifySuccess, step.notifyUnstable, step.notifyRegression, step.notifyBackToNormal, step.notifyRepeatedFailure,
+                    step.includeTestSummary, step.includeFailedTests, step.commitInfoChoice, step.includeCustomMessage, step.customMessage);
+                return new ActiveNotifier(notifier, listener);
+            }
+        }
+
+        // streamline unit testing
         SlackService getSlackService(String baseUrl, String team, String authToken, String authTokenCredentialId, boolean botUser, String channel) {
             return new StandardSlackService(baseUrl, team, authToken, authTokenCredentialId, botUser, channel);
         }

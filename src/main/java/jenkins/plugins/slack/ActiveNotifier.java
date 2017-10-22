@@ -113,9 +113,8 @@ public class ActiveNotifier implements FineGrainedNotifier {
     }
 
     public void completed(Run<?, ?> r) {
-        Job<?, ?> parent = r.getParent();
         Result result = r.getResult();
-        Run<?, ?> previousBuild = parent.getLastBuild();
+        Run<?, ?> previousBuild = r.getPreviousCompletedBuild();
         while (previousBuild != null && previousBuild.getResult() == Result.ABORTED) {
             previousBuild = previousBuild.getPreviousCompletedBuild();
         }
